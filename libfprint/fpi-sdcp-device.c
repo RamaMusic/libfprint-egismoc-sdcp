@@ -219,6 +219,8 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
   int private_key_len = 0;
   guchar public_key[SDCP_PUBLIC_KEY_SIZE];
   gsize public_key_len = 0;
+  unsigned char *public_key_tmp = NULL;
+  size_t public_key_tmp_len = 0;
   guchar *random;
 
   if (priv->host_key)
@@ -230,7 +232,21 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
   if (private_key_bytes)
     key = sdcp_get_pkey (private_key_bytes, NULL);
   else
-    key = EVP_EC_gen (SDCP_OPENSSL_CURVE_NAME);
+    {
+      key = EVP_EC_gen (SDCP_OPENSSL_CURVE_NAME);
+      if (!key)
+        {
+          g_error ("Failed generating host key");
+          return FALSE;
+        }
+      if (!EVP_PKEY_set_utf8_string_param (key,
+                                           OSSL_PKEY_PARAM_EC_POINT_CONVERSION_FORMAT,
+                                           "uncompressed"))
+        {
+          g_error ("Failed forcing uncompressed EC point format");
+          return FALSE;
+        }
+    }
 
   /* get private_key from the key */
   if (!EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_PRIV_KEY, &private_key_bn))
@@ -253,14 +269,17 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
     g_assert_cmpmem (private_key_bytes, SDCP_PRIVATE_KEY_SIZE,
                      private_key, SDCP_PRIVATE_KEY_SIZE);
 
-  /* get public_key from the key */
-  if (!EVP_PKEY_get_octet_string_param (key, OSSL_PKEY_PARAM_PUB_KEY,
-      public_key, SDCP_PUBLIC_KEY_SIZE, &public_key_len))
+  /* get public_key from the key in guaranteed uncompressed format */
+  public_key_tmp_len = EVP_PKEY_get1_encoded_public_key (key, &public_key_tmp);
+  if (public_key_tmp_len == 0 || public_key_tmp == NULL)
     {
       g_error ("Failed getting public key");
       return FALSE;
     }
-  g_assert (public_key_len == SDCP_PUBLIC_KEY_SIZE);
+  g_assert (public_key_tmp_len == SDCP_PUBLIC_KEY_SIZE);
+  memcpy (public_key, public_key_tmp, SDCP_PUBLIC_KEY_SIZE);
+  public_key_len = public_key_tmp_len;
+  OPENSSL_free (public_key_tmp);
 
   /* set private member values */
   priv->host_key = g_steal_pointer (&key);
